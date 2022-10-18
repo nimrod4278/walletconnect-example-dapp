@@ -1,6 +1,7 @@
 import * as React from "react";
 import styled from "styled-components";
-import WalletConnect from "@walletconnect/client";
+// import WalletConnect from "@walletconnect/client";
+import { ProxyConnector } from "./temp";
 import QRCodeModal from "@walletconnect/qrcode-modal";
 import { convertUtf8ToHex } from "@walletconnect/utils";
 import { IInternalEvent } from "@walletconnect/types";
@@ -128,7 +129,8 @@ const STestButton = styled(Button as any)`
 `;
 
 interface IAppState {
-  connector: WalletConnect | null;
+  dappConnector: ProxyConnector | null;
+  walletConnector: ProxyConnector | null;
   fetching: boolean;
   connected: boolean;
   chainId: number;
@@ -142,7 +144,8 @@ interface IAppState {
 }
 
 const INITIAL_STATE: IAppState = {
-  connector: null,
+  dappConnector: null,
+  walletConnector: null,
   fetching: false,
   connected: false,
   chainId: 1,
@@ -155,37 +158,103 @@ const INITIAL_STATE: IAppState = {
   assets: [],
 };
 
+
+
 class App extends React.Component<any, any> {
   public state: IAppState = {
     ...INITIAL_STATE,
   };
 
+
+
   public connect = async () => {
     // bridge url
     const bridge = "https://bridge.walletconnect.org";
 
-    // create new connector
-    const connector = new WalletConnect({ bridge, qrcodeModal: QRCodeModal });
+    // create new dappConnector
+    const dappConnector = new ProxyConnector({ bridge, qrcodeModal: QRCodeModal });
+    const walletConnector = new ProxyConnector({ uri: "wc:9671e97c-6b17-4c6c-ac1a-cb60e776322f@1?bridge=https%3A%2F%2Fs.bridge.walletconnect.org&key=3ac1705ca4be160e9c7d5dda118e72a836ff0698f749c1e9332671301b1bcfc0" })
 
-    await this.setState({ connector });
+    await this.setState({ dappConnector, walletConnector });
 
     // check if already connected
-    if (!connector.connected) {
+    if (!dappConnector.connected) {
       // create new session
-      await connector.createSession();
+      await dappConnector.createSession();
     }
 
     // subscribe to events
-    await this.subscribeToEvents();
-  };
-  public subscribeToEvents = () => {
-    const { connector } = this.state;
+    await this.subscribeToEvents(dappConnector);
+    await this.subscribeToEvents(walletConnector, false);
+    console.log(walletConnector);
 
-    if (!connector) {
-      return;
+  };
+
+  public sendTx = (method: string, params: any) => {
+    console.log("sendTx")
+
+    const customRequest = {
+      id: 1337,
+      jsonrpc: "2.0",
+      method,
+      params
+    };
+    // Send transaction
+    if (this.state.dappConnector) {
+      this.state.dappConnector
+        .sendCustomRequest(customRequest)
+        .then((result) => {
+          // Returns transaction id (hash)
+          console.log("sendCustomRequest result", result);
+          return result
+        })
+        .catch((error) => {
+          // Error returned when rejected
+          console.error(error);
+        });
+    }
+  }
+
+  public subscribeToEvents = (connector: any, isDapp = true) => {
+    // const { dappConnector } = this.state;
+
+    // if (!connector) {
+    //   return;
+    // }
+
+    if (!isDapp) {
+      connector.on("session_request", async (error: any, payload: any) => {
+        console.log("EVENT", "session_request");
+
+        if (error) {
+          throw error;
+        }
+        console.log("SESSION_REQUEST", payload.params);
+        connector.approveSession({ chainId: 1, accounts: ["0x470ac1550aCEfd33fb7995b2ece670D4FF704497"] });
+      });
+
+
+      connector.on("call_request", async (error: any, payload: any) => {
+        console.log("EVENT", "call_request", "method", payload.method);
+        console.log("EVENT", "call_request", "params", payload.params);
+        console.log("payload", payload);
+
+        if (error) {
+          throw error;
+        }
+
+        if (this.state.dappConnector) {
+          const result = await this.state.dappConnector.proxyRequest(payload)
+          console.log("dasfdsfDSFSdsdfs", result)
+          if (this.state.walletConnector) {
+            this.state.walletConnector.proxyResponse(payload.id, result)
+          }
+        }
+        // this.sendTx(payload.method, payload.params);
+      });
     }
 
-    connector.on("session_update", async (error, payload) => {
+    connector.on("session_update", async (error: any, payload: any) => {
       console.log(`connector.on("session_update")`);
 
       if (error) {
@@ -193,27 +262,34 @@ class App extends React.Component<any, any> {
       }
 
       const { chainId, accounts } = payload.params[0];
-      this.onSessionUpdate(accounts, chainId);
+      if (isDapp) {
+        this.onSessionUpdate(accounts, chainId)
+      }
     });
 
-    connector.on("connect", (error, payload) => {
+    connector.on("connect", (error: any, payload: IInternalEvent) => {
       console.log(`connector.on("connect")`);
 
       if (error) {
         throw error;
       }
 
-      this.onConnect(payload);
+      if (isDapp) {
+        this.onConnect(payload)
+      }
+
     });
 
-    connector.on("disconnect", (error, payload) => {
+    connector.on("disconnect", (error: any, payload: any) => {
       console.log(`connector.on("disconnect")`);
 
       if (error) {
         throw error;
       }
 
-      this.onDisconnect();
+      if (isDapp) {
+        this.onDisconnect()
+      }
     });
 
     if (connector.connected) {
@@ -225,16 +301,19 @@ class App extends React.Component<any, any> {
         accounts,
         address,
       });
-      this.onSessionUpdate(accounts, chainId);
+
+      if (isDapp) {
+        this.onSessionUpdate(accounts, chainId)
+      }
     }
 
     this.setState({ connector });
   };
 
   public killSession = async () => {
-    const { connector } = this.state;
-    if (connector) {
-      connector.killSession();
+    const { dappConnector } = this.state;
+    if (dappConnector) {
+      dappConnector.killSession();
     }
     this.resetApp();
   };
@@ -282,9 +361,9 @@ class App extends React.Component<any, any> {
   public toggleModal = () => this.setState({ showModal: !this.state.showModal });
 
   public testSendTransaction = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -333,7 +412,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // send transaction
-      const result = await connector.sendTransaction(tx);
+      const result = await dappConnector.sendTransaction(tx);
 
       // format displayed result
       const formattedResult = {
@@ -346,20 +425,20 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
   public testSignTransaction = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -408,7 +487,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // send transaction
-      const result = await connector.signTransaction(tx);
+      const result = await dappConnector.signTransaction(tx);
 
       // format displayed result
       const formattedResult = {
@@ -421,20 +500,20 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
   public testLegacySignMessage = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -455,7 +534,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // send message
-      const result = await connector.signMessage(msgParams);
+      const result = await dappConnector.signMessage(msgParams);
 
       // verify signature
       const valid = await verifySignature(address, result, hash, chainId);
@@ -470,20 +549,20 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
   public testStandardSignMessage = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -504,7 +583,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // send message
-      const result = await connector.signMessage(msgParams);
+      const result = await dappConnector.signMessage(msgParams);
 
       // verify signature
       const hash = hashMessage(message);
@@ -520,20 +599,20 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
   public testPersonalSignMessage = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -554,7 +633,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // send message
-      const result = await connector.signPersonalMessage(msgParams);
+      const result = await dappConnector.signPersonalMessage(msgParams);
 
       // verify signature
       const hash = hashMessage(message);
@@ -570,20 +649,20 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
   public testSignTypedData = async () => {
-    const { connector, address, chainId } = this.state;
+    const { dappConnector, address, chainId } = this.state;
 
-    if (!connector) {
+    if (!dappConnector) {
       return;
     }
 
@@ -600,7 +679,7 @@ class App extends React.Component<any, any> {
       this.setState({ pendingRequest: true });
 
       // sign typed data
-      const result = await connector.signTypedData(msgParams);
+      const result = await dappConnector.signTypedData(msgParams);
 
       // verify signature
       const hash = hashTypedDataMessage(message);
@@ -616,13 +695,13 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({
-        connector,
+        dappConnector,
         pendingRequest: false,
         result: formattedResult || null,
       });
     } catch (error) {
       console.error(error);
-      this.setState({ connector, pendingRequest: false, result: null });
+      this.setState({ dappConnector, pendingRequest: false, result: null });
     }
   };
 
